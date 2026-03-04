@@ -1,8 +1,11 @@
-DEMOGORGN_data/
+Data/
 .venv/
 __pycache__/
 .ipynb_checkpoints/
-gstatsMCMC.yml
+.spyproject
+.virtual_documents
 gstatsMCMC/__pycache__/
 gstatsMCMC/.ipynb_checkpoints/
+*.txt
+*.csv
 .gitignore

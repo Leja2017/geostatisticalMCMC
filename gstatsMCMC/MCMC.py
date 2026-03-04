@@ -23,6 +23,7 @@ import sys
 import time
 
 from . import Topography
+from . import Utilities
 from . import gstatsim_custom as gsim
 from copy import deepcopy
 import numbers
@@ -611,12 +612,13 @@ class RandField:
             cond_msk_edge[:,bwidth-1]=1
             
             # calculate the distance to block boundaries
-            dist_edge = RandField.min_dist(np.where(cond_msk_edge==0, np.nan, 1), xx, yy)
-            # re-scale the distance by the maximum correlation distance
-            dist_rescale_edge = RandField.rescale(dist_edge, self.max_dist)
-            # calculate the logistic function
-            dist_logi_edge = RandField.logistic(dist_rescale_edge, self.logistic_param[0], self.logistic_param[1], self.logistic_param[2]) - self.logistic_param[3]
-            edge_masks.append(dist_logi_edge)
+            dist = Utilities.min_dist_from_mask(xx, yy,cond_msk_edge==1)
+            # rescale the distance to be from 0 to 1, where any dist higher than maxdist is projected to 1
+            dist_rescale = np.where(dist>self.max_dist,1,(dist/self.max_dist))
+            # Use logistic function to map distance to a smoothly-changing weight
+            dist_logi = self.logistic_param[0]/(1+np.exp(-self.logistic_param[2]*(dist_rescale-self.logistic_param[1]))) - self.logistic_param[3]
+
+            edge_masks.append(dist_logi)
 
         return edge_masks
     
@@ -684,37 +686,6 @@ class RandField:
 
         return fields[0,:,:]
     
-    def min_dist(hard_mat, xx, yy):
-        """
-        Compute the minimum Euclidean distance to non-NaN points.
-        
-        Notes: This is an internal helper function and not intended for direct use.
-        """
-        dist = np.zeros(xx.shape)
-        xx_hard = np.where(np.isnan(hard_mat), np.nan, xx)
-        yy_hard = np.where(np.isnan(hard_mat), np.nan, yy)
-        
-        for i in range(xx.shape[0]):
-            for j in range(xx.shape[1]):
-                dist[i,j] = np.nanmin(np.sqrt(np.square(yy[i,j]-yy_hard)+np.square(xx[i,j]-xx_hard)))
-        return dist
-
-    def rescale(x, maxdist):
-        """
-        Rescale distance values by the specified maximum distance.
-        
-        Notes: This is an internal helper function and not intended for direct use.
-        """
-        return np.where(x>maxdist,1,(x/maxdist))
-
-    def logistic(x, L, x0, k):
-        """
-        Evaluate the logistic function with given parameters.
-        
-        Notes: is an internal helper function and not intended for direct use.
-        """
-        return L/(1+np.exp(-k*(x-x0)))
-    
     def get_crf_weight(self,xx,yy,cond_data_mask):
         """
         This method generates weights for a conditional random field using a mask showing locations of the conditioning data. 
@@ -731,13 +702,13 @@ class RandField:
             dist_logi (np.ndarray): 2D array. The raw output of the logistic function applied to the rescaled distances.
         """
         logistic_param = self.logistic_param
-        max_dist = self.max_dist
+        maxdist = self.max_dist
         # calculate the distance to block boundaries
-        dist = RandField.min_dist(np.where(cond_data_mask==0, np.nan, 1), xx, yy)
-        # re-scale the distance by the maximum correlation distance
-        dist_rescale = RandField.rescale(dist, max_dist)
-        # calculate the logistic function
-        dist_logi = RandField.logistic(dist_rescale, logistic_param[0], logistic_param[1], logistic_param[2]) - logistic_param[3]
+        dist = Utilities.min_dist_from_mask(xx, yy, cond_data_mask==1)
+        # re-scale the distance by the maximum correlation distance, such that the rescaled distance ranges between 0 to 1, where any dist higher than maxdist is projected to 1
+        dist_rescale = np.where(dist>maxdist,1,(dist/maxdist))
+        # Use logistic function to map distance to a smoothly-changing weight
+        dist_logi = logistic_param[0]/(1+np.exp(-logistic_param[2]*(dist_rescale-logistic_param[1]))) - logistic_param[3]
 
         weight = dist_logi - np.min(dist_logi)
         return weight, dist, dist_rescale, dist_logi
@@ -759,9 +730,11 @@ class RandField:
             dist_logi (np.ndarray): 2D array. The raw output of the logistic function applied to the rescaled distances.
         """
         logistic_param = self.logistic_param
-        max_dist = self.max_dist
-        dist_rescale = RandField.rescale(dist, max_dist)
-        dist_logi = RandField.logistic(dist_rescale, logistic_param[0], logistic_param[1], logistic_param[2]) - logistic_param[3]
+        maxdist = self.max_dist
+        # rescale the distance to be from 0 to 1, where any dist higher than maxdist is projected to 1
+        dist_rescale = np.where(dist>maxdist,1,(dist/maxdist))
+        # Use logistic function to map distance to a smoothly-changing weight
+        dist_logi = logistic_param[0]/(1+np.exp(-logistic_param[2]*(dist_rescale-logistic_param[1]))) - logistic_param[3]
 
         weight = dist_logi - np.min(dist_logi)
         return weight, dist, dist_rescale, dist_logi
@@ -1406,10 +1379,32 @@ class chain_crf(chain):
                 if i%info_per_iter == 0 or i == 1 or i == n_iter - 1:
                     move_cursor_to_line(output_line)
                     clear_line()
-                    progress = i / (n_iter - 1) * 100
+                    
+                    # Calculate progress
+                    progress = i / (n_iter - 1)
+                    progress_pct = progress * 100
                     elapsed = time.time() - iter_start_time
                     iter_per_sec = i / elapsed if elapsed > 0 else 0
-                    print(f'Chain {chain_id}: {progress:.1f}% | i: {i} | mc loss: {loss_mc_cache[i]:.3e} | loss: {loss_cache[i]:.3e} | acc: {np.sum(step_cache)/(i+1):.4f} | it/s: {iter_per_sec:.2f} | seed: {str(seed)[:6]}', end='')
+                    
+                    # Calculate ETA
+                    if iter_per_sec > 0:
+                        remaining_iters = n_iter - i
+                        eta_seconds = remaining_iters / iter_per_sec
+                        eta_hours = int(eta_seconds // 3600)
+                        eta_minutes = int((eta_seconds % 3600) // 60)
+                        eta_secs = int(eta_seconds % 60)
+                        eta_str = f"{eta_hours:02d}:{eta_minutes:02d}:{eta_secs:02d}"
+                    else:
+                        eta_str = "--:--:--"
+                    
+                    # Create visual progress bar
+                    bar_length = 10
+                    filled_length = int(bar_length * progress)
+                    bar = '█' * filled_length + '▍' * (1 if filled_length < bar_length and progress > 0 else 0)
+                    bar = bar.ljust(bar_length)
+                    
+                    # Format output
+                    print(f'Chain {chain_id} ({str(seed)[:6]}): {progress_pct:3.0f}%|{bar}| ETA: {eta_str} | it/s: {iter_per_sec:6.2f} | n: {n_iter:{len(str(n_iter))}d} | loss: {loss_cache[i]:.3e} | acc: {np.sum(step_cache)/(i+1):.4f}', end='')
                     sys.stdout.flush()
 
             # Calculate acceptance rate for plot
@@ -1847,10 +1842,32 @@ class chain_sgs(chain):
                 if i%info_per_iter == 0 or i == 1 or i == n_iter - 1:
                     move_cursor_to_line(output_line)
                     clear_line()
-                    progress = i / (n_iter - 1) * 100
+                    
+                    # Calculate progress
+                    progress = i / (n_iter - 1)
+                    progress_pct = progress * 100
                     elapsed = time.time() - iter_start_time
                     iter_per_sec = i / elapsed if elapsed > 0 else 0
-                    print(f'Chain {chain_id}: {progress:.1f}% | i: {i} | mc loss: {loss_mc_cache[i]:.3e} | loss: {loss_cache[i]:.3e} | acc: {np.sum(step_cache)/(i+1):.4f} | it/s: {iter_per_sec:.2f} | seed: {str(seed)[:6]}', end='')
+                    
+                    # Calculate ETA
+                    if iter_per_sec > 0:
+                        remaining_iters = n_iter - i
+                        eta_seconds = remaining_iters / iter_per_sec
+                        eta_hours = int(eta_seconds // 3600)
+                        eta_minutes = int((eta_seconds % 3600) // 60)
+                        eta_secs = int(eta_seconds % 60)
+                        eta_str = f"{eta_hours:02d}:{eta_minutes:02d}:{eta_secs:02d}"
+                    else:
+                        eta_str = "--:--:--"
+                    
+                    # Create visual progress bar
+                    bar_length = 10
+                    filled_length = int(bar_length * progress)
+                    bar = '█' * filled_length + '▍' * (1 if filled_length < bar_length and progress > 0 else 0)
+                    bar = bar.ljust(bar_length)
+                    
+                    # Format output
+                    print(f'Chain {chain_id} ({str(seed)[:6]}): {progress_pct:3.0f}%|{bar}| ETA: {eta_str} | it/s: {iter_per_sec:6.2f} | n: {n_iter:{len(str(n_iter))}d} | loss: {loss_cache[i]:.3e} | acc: {np.sum(step_cache)/(i+1):.4f}', end='')
                     sys.stdout.flush()
 
             # Calculate acceptance rate for plot
