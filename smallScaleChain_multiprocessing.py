@@ -52,6 +52,9 @@ def largeScaleChain_mp(n_chains,n_workers,largeScaleChain,rf,initial_beds,rng_se
         chain_param = deepcopy(example_chain)
         chain_param['rng_seed'] = rng_seeds[i]
         chain_param['initial_bed'] = initial_beds[i]
+        
+        RF_param = deepcopy(example_RF)
+        RF_param['rng_seed'] = rng_seeds[i]
 
         run_param = {} # A dictionary of parameters passed in the run() function
         run_param['n_iter'] = n_iters[i]
@@ -60,11 +63,11 @@ def largeScaleChain_mp(n_chains,n_workers,largeScaleChain,rf,initial_beds,rng_se
         run_param['plot']=False
         run_param['progress_bar']=False
         run_param['chain_id'] = i
-        run_param['tqdm_position'] = i + 2 # 2 lines for header
+        run_param['tqdm_position'] = i + 1 # 1 extra line for header
         run_param['seed'] = rng_seeds[i]
         run_param['output_path'] = str(Path(output_path) / 'LargeScaleChain')
 
-        params.append([deepcopy(chain_param),deepcopy(example_RF),deepcopy(run_param)])
+        params.append([chain_param,RF_param,deepcopy(run_param)])
 
     # Print header and reserve space for progress bars
     print('Running MCMC chains...')
@@ -75,8 +78,19 @@ def largeScaleChain_mp(n_chains,n_workers,largeScaleChain,rf,initial_beds,rng_se
     with mp.Pool(n_workers) as pool:
         result = pool.starmap(lsc_run_wrapper, params)
 
-    # Move cursor below chain outputs before printing the timing
-    print('\n' * (n_chains + 2))
+
+    print('\n')
+    print(r'''
+           _o                  _                 _o_   o   o
+      o    (^)  _             (o)    >')         (^)  (^) (^)
+   _ (^) ('>~ _(v)_      _   //-\\   /V\      ('> ~ __.~   ~
+ ('v')~ // \\  /-\      (.)-=_\_/)   (_)>     (V)  ~  ~~ /__ /\
+//-=-\\ (\_/) (\_/)      V \ _)>~    ~~      <(__\[     ](__=_')
+(\_=_/)  ^ ^   ^ ^       ~  ~~                ~~~~        ~~~~~
+_^^_^^   __  ..-.___..---I~~~:_  .__...--.._.;-'I~~~~-.____...;-
+ |~|~~~~~| ~~|  _   |    |  _| ~~|  |  |  |  |_ |      | _ |  |
+_.-~~_.-~-~._.-~~._.-~-~_.-~~_.-~~_.-~-~._.-~~._.-~-~_.-~~_.-~-~
+    ''')
 
     toc = time.time()
     print(f'Completed in {toc-tic:.2f} seconds')
@@ -117,47 +131,53 @@ def lsc_run_wrapper(param_chain, param_rf, param_run):
     seed_folder = Path(output_path) / f'{str(seed)[:6]}'
 
     # Check for existing bed files (to resume progress)
-    existing_beds = list(seed_folder.glob('bed_*.txt'))
+    # existing_beds = list(seed_folder.glob('bed_*.txt'))
+    exist_chain = list(seed_folder.glob('current_iter.txt'))
     cumulative_iters = 0
     previous_results = None
     files_to_delete = []
 
     # Prepare to merge/concatenate existing files with new results
-    if existing_beds:
-        bed_file = existing_beds[0] # Existing bed file
+    #if existing_beds:
+    if exist_chain:
+        #bed_file = existing_beds[0] # Existing bed file
         
         # Extract iteration count from filename
-        filename = bed_file.stem  # Gets 'bed_100k' from 'bed_100k.txt'
-        iter_str = filename.split('_')[1].replace('k', '')  # Gets '100' from 'bed_100k'
-        iter_count = int(iter_str)
-        cumulative_iters = iter_count * 1000  # Convert back to actual iterations
+        #filename = bed_file.stem  # Gets 'bed_100k' from 'bed_100k.txt'
+        #iter_str = filename.split('_')[1].replace('k', '')  # Gets '100' from 'bed_100k'
+        #iter_count = int(iter_str)
+        #cumulative_iters = iter_count * 1000  # Convert back to actual iterations
+        cumulative_iters = int(np.loadtxt(exist_chain[0]))
+        iter_count = int(cumulative_iters / 1000)
+        bed_file = 'bed_'+str(iter_count)+'k.txt'
         
         # Load the most recent bed file
-        most_recent_bed = np.loadtxt(bed_file)
+        most_recent_bed = np.load(seed_folder / f'bed_{iter_count}k.npy')
         
         # Update the chain's initial bed
         chain.initial_bed = most_recent_bed
         
         # Load all previous result files
-        previous_results = {
-            'loss_mc': np.loadtxt(seed_folder / f'loss_mc_{iter_count}k.txt'),
-            'loss_data': np.loadtxt(seed_folder / f'loss_data_{iter_count}k.txt'),
-            'loss': np.loadtxt(seed_folder / f'loss_{iter_count}k.txt'),
-            'steps': np.loadtxt(seed_folder / f'steps_{iter_count}k.txt'),
-            'resampled_times': np.loadtxt(seed_folder / f'resampled_times_{iter_count}k.txt'),
-            'blocks_used': np.loadtxt(seed_folder / f'blocks_used_{iter_count}k.txt')
-        }
+        with np.load(seed_folder / f'results_{iter_count}k.npz') as results_data:
+            previous_results = {
+                'loss_mc' : results_data['loss_mc'].copy(),
+                'loss_data' : results_data['loss_data'].copy(),
+                'loss' : results_data['loss'].copy(),
+                'steps' : results_data['steps'].copy(),
+                'resampled_times' : results_data['resampled_times'].copy(),
+                'blocks_used' : results_data['blocks_used'].copy()
+            }
         
         # Mark files for deletion
         files_to_delete = [
-            seed_folder / f'bed_{iter_count}k.txt',
-            seed_folder / f'loss_mc_{iter_count}k.txt',
-            seed_folder / f'loss_data_{iter_count}k.txt',
-            seed_folder / f'loss_{iter_count}k.txt',
-            seed_folder / f'steps_{iter_count}k.txt',
-            seed_folder / f'resampled_times_{iter_count}k.txt',
-            seed_folder / f'blocks_used_{iter_count}k.txt'
+            seed_folder / f'results_{iter_count}k.npz',
+            seed_folder / 'current_iter.txt'
         ]
+        
+        with open(seed_folder / 'RNGState_RandField.txt', "r") as file: 
+            rf1.rng.bit_generator.state = json.load(file)
+        with open(seed_folder / 'RNGState_chain.txt', "r") as file: 
+            chain.rng.bit_generator.state = json.load(file)
 
     # Store positioning info
     chain.chain_id = param_run.get('chain_id', 'Unknown')
@@ -177,6 +197,12 @@ def lsc_run_wrapper(param_chain, param_rf, param_run):
     # Unpack results
     beds, loss_mc, loss_data, loss, steps, resampled_times, blocks_used = result
 
+    # Save the state of the random generator
+    with open(seed_folder / 'RNGState_RandField.txt', "w") as file: 
+        json.dump(rf1.rng.bit_generator.state, file)
+    with open(seed_folder / 'RNGState_chain.txt', "w") as file: 
+        json.dump(chain.rng.bit_generator.state,file)
+
     # Combine with previous results if they exist
     if previous_results is not None:
         # Append new results to previous results
@@ -192,23 +218,29 @@ def lsc_run_wrapper(param_chain, param_rf, param_run):
     iteration_label = f'{cumulative_iters // 1000}k'
     
     # Save all outputs with updated iteration label
-    np.savetxt(seed_folder / f'bed_{iteration_label}.txt', beds)
-    np.savetxt(seed_folder / f'loss_mc_{iteration_label}.txt', loss_mc)
-    np.savetxt(seed_folder / f'loss_data_{iteration_label}.txt', loss_data)
-    np.savetxt(seed_folder / f'loss_{iteration_label}.txt', loss)
-    np.savetxt(seed_folder / f'steps_{iteration_label}.txt', steps)
-    np.savetxt(seed_folder / f'resampled_times_{iteration_label}.txt', resampled_times)
-    np.savetxt(seed_folder / f'blocks_used_{iteration_label}.txt', blocks_used)
+    np.save(seed_folder / f'bed_{iteration_label}.npy', beds)
+
+    np.savez_compressed(
+        seed_folder / f'results_{iteration_label}.npz',
+        loss_mc=loss_mc,
+        loss_data=loss_data,
+        loss=loss,
+        steps=steps,
+        resampled_times=resampled_times,
+        blocks_used=blocks_used
+    )
     
     # Delete old files after successfully saving new ones
     for file_path in files_to_delete:
         if file_path.exists():
             file_path.unlink()
+            
+    np.savetxt(seed_folder / 'current_iter.txt', [cumulative_iters], fmt='%d')
 
     return result
 
     
-def smallScaleChain_mp(n_chains, n_workers, smallScaleChain, initial_beds, ssc_rng_seeds, lsc_rng_seed, n_iters, output_path='./Data/output'):
+def smallScaleChain_mp(n_chains, n_workers, smallScaleChain, initial_beds, ssc_rng_seeds, lsc_seed_map, n_iters, output_path='./Data/output'):
     '''
     function to run multiple small scale chain using multiprocessing
 
@@ -252,8 +284,8 @@ def smallScaleChain_mp(n_chains, n_workers, smallScaleChain, initial_beds, ssc_r
         run_param['chain_id'] = i
         run_param['tqdm_position'] = i + 2 # 2 lines for header
         run_param['ssc_seed'] = ssc_rng_seeds[i]
-        run_param['lsc_seed'] = lsc_rng_seed
-        run_param['output_path'] = str(Path(output_path) / 'LargeScaleChain' / str(lsc_rng_seed)[:6] / 'SmallScaleChain')
+        run_param['lsc_seed'] = lsc_seed_map[i]
+        run_param['output_path'] = str(Path(output_path) / 'LargeScaleChain' / str(lsc_seed_map[i])[:6] / 'SmallScaleChain')
         params.append([deepcopy(chain_param), deepcopy(run_param)])
 
     # Print header and reserve space for progress bars
@@ -265,8 +297,19 @@ def smallScaleChain_mp(n_chains, n_workers, smallScaleChain, initial_beds, ssc_r
     with mp.Pool(n_workers) as pool:
         result = pool.starmap(msc_run_wrapper, params)
 
-    # Move cursor below chain outputs before printing the timing
-    print('\n' * (n_chains + 2))
+
+    print('\n')
+    print(r'''
+           _o                  _                 _o_   o   o
+      o    (^)  _             (o)    >')         (^)  (^) (^)
+   _ (^) ('>~ _(v)_      _   //-\\   /V\      ('> ~ __.~   ~
+ ('v')~ // \\  /-\      (.)-=_\_/)   (_)>     (V)  ~  ~~ /__ /\
+//-=-\\ (\_/) (\_/)      V \ _)>~    ~~      <(__\[     ](__=_')
+(\_=_/)  ^ ^   ^ ^       ~  ~~                ~~~~        ~~~~~
+_^^_^^   __  ..-.___..---I~~~:_  .__...--.._.;-'I~~~~-.____...;-
+ |~|~~~~~| ~~|  _   |    |  _| ~~|  |  |  |  |_ |      | _ |  |
+_.-~~_.-~-~._.-~~._.-~-~_.-~~_.-~~_.-~-~._.-~~._.-~-~_.-~~_.-~-~
+    ''')
 
     toc = time.time()
     print(f'Completed in {toc-tic} seconds')
@@ -310,47 +353,31 @@ def msc_run_wrapper(param_chain, param_run):
     seed_folder = Path(output_path) / f'{str(seed)[:6]}'
 
     # Check for existing bed files (to resume progress)
-    existing_beds = list(seed_folder.glob('bed_*.txt'))
+    exist_chain = list(seed_folder.glob('current_iter.txt'))
     cumulative_iters = 0
     previous_results = None
     files_to_delete = []
 
-    # Prepare to merge/concatenate existing files with new reults
-    if existing_beds:
-        bed_file = existing_beds[0] # Existing bed file
-
-        # Extract iteration count from filename
-        filename = bed_file.stem # Gets 'bed_100k' from 'bed_100k.txt'
-        iter_str = filename.split('_')[1].replace('k', '')
-        iter_count = int(iter_str)
-        cumulative_iters = iter_count * 1000 # Convert back to actual iterations
-
-        # Load the most recent bed file
-        most_recent_bed = np.loadtxt(bed_file)
-
-        # Update the chain's intiial bed
+    if exist_chain:
+        cumulative_iters = int(np.loadtxt(exist_chain[0]))
+        iter_count = int(cumulative_iters / 1000)
+        most_recent_bed = np.load(seed_folder / f'bed_{iter_count}k.npy')
         chain.initial_bed = most_recent_bed
-
-        # Load all previous result files
-        previous_results = {
-            'loss_mc': np.loadtxt(seed_folder / f'loss_mc_{iter_count}k.txt'),
-            'loss_data': np.loadtxt(seed_folder / f'loss_data_{iter_count}k.txt'),
-            'loss': np.loadtxt(seed_folder / f'loss_{iter_count}k.txt'),
-            'steps': np.loadtxt(seed_folder / f'steps_{iter_count}k.txt'),
-            'resampled_times': np.loadtxt(seed_folder / f'resampled_times_{iter_count}k.txt'),
-            'blocks_used': np.loadtxt(seed_folder / f'blocks_used_{iter_count}k.txt')
-        }
-
-        # Mark files for deletion
+        with np.load(seed_folder / f'results_{iter_count}k.npz') as results_data:
+            previous_results = {
+                'loss_mc': results_data['loss_mc'].copy(),
+                'loss_data': results_data['loss_data'].copy(),
+                'loss': results_data['loss'].copy(),
+                'steps': results_data['steps'].copy(),
+                'resampled_times': results_data['resampled_times'].copy(),
+                'blocks_used': results_data['blocks_used'].copy()
+            }
         files_to_delete = [
-            seed_folder / f'bed_{iter_count}k.txt',
-            seed_folder / f'loss_mc_{iter_count}k.txt',
-            seed_folder / f'loss_data_{iter_count}k.txt',
-            seed_folder / f'loss_{iter_count}k.txt',
-            seed_folder / f'steps_{iter_count}k.txt',
-            seed_folder / f'resampled_times_{iter_count}k.txt',
-            seed_folder / f'blocks_used_{iter_count}k.txt'
+            seed_folder / f'results_{iter_count}k.npz',
+            seed_folder / 'current_iter.txt'
         ]
+        with open(seed_folder / 'RNGState_chain.txt', 'r') as file:
+            chain.rng.bit_generator.state = json.load(file)
 
     # Store positioning info
     chain.chain_id = param_run.get('chain_id', 'Unknown')
@@ -369,6 +396,9 @@ def msc_run_wrapper(param_chain, param_run):
     # Unpack results
     beds, loss_mc, loss_data, loss, steps, resampled_times, blocks_used = result
 
+    with open(seed_folder / 'RNGState_chain.txt', "w") as file: 
+        json.dump(chain.rng.bit_generator.state,file)
+
     # Combine with previous results if they exist
     if previous_results is not None:
         # Append new results to previous results
@@ -384,18 +414,24 @@ def msc_run_wrapper(param_chain, param_run):
     iteration_label = f'{cumulative_iters // 1000}k'
 
     # Save all outputs with updated iteration label
-    np.savetxt(seed_folder / f'bed_{iteration_label}.txt', beds)
-    np.savetxt(seed_folder / f'loss_mc_{iteration_label}.txt', loss_mc)
-    np.savetxt(seed_folder / f'loss_data_{iteration_label}.txt', loss_data)
-    np.savetxt(seed_folder / f'loss_{iteration_label}.txt', loss)
-    np.savetxt(seed_folder / f'steps_{iteration_label}.txt', steps)
-    np.savetxt(seed_folder / f'resampled_times_{iteration_label}.txt', resampled_times)
-    np.savetxt(seed_folder / f'blocks_used_{iteration_label}.txt', blocks_used)
+    np.save(seed_folder / f'bed_{iteration_label}.npy', beds)
+
+    np.savez_compressed(
+        seed_folder / f'results_{iteration_label}.npz',
+        loss_mc=loss_mc,
+        loss_data=loss_data,
+        loss=loss,
+        steps=steps,
+        resampled_times=resampled_times,
+        blocks_used=blocks_used
+    )
 
     # Delete old files after successfully saving new ones
     for file_path in files_to_delete:
         if file_path.exists():
             file_path.unlink()
+
+    np.savetxt(seed_folder / 'current_iter.txt', [cumulative_iters], fmt='%d')
 
     return result
 
@@ -408,9 +444,11 @@ if __name__ == '__main__':
     output_path = Path(r'./Data/Denman')
 
     n_iter = 1000
-    lsc_seed_idx = 0 # Which lsc are we starting from?
-    ssc_start_idx = 0 # Min of 0
-    ssc_end_idx = 5 # Max of 19
+
+    # Index range of LSCs to run SSCs for (0-9 inclusive)
+    lsc_starting_idx = 0
+    lsc_ending_idx = 0
+
     #NOTE n_chains is calculated by subtracting the starting index from the ending index
     n_workers = psutil.cpu_count(logical=False)-1
 
@@ -460,23 +498,50 @@ if __name__ == '__main__':
 
     # Read all seeds
     with open(seed_file_path, 'r') as f:
-        lines = f.readlines()
+        rng_seeds = [int(line.strip()) for line in f.readlines()]
 
-    rng_seeds = []
-    for line in lines:
-        rng_seeds.append(int(line.strip()))
+    lsc_indices = range(lsc_starting_idx, lsc_ending_idx+1)
+    n_lsc_selected = len(lsc_indices)
+    n_ssc_total = n_lsc_selected * 10 # 10 SSC per LSC
 
-    ssc_rng_seeds = rng_seeds[20*lsc_seed_idx:20*(lsc_seed_idx+1)]
-    ssc_rng_seeds = ssc_rng_seeds[ssc_start_idx:ssc_end_idx]
-    lsc_rng_seed = rng_seeds[lsc_seed_idx]
+    # Build flat lists across all selected LSCs
+    initial_beds = []
+    ssc_seeds = []
+    lsc_seed_map = []
+    lsc_iter_map = []
 
-    #NOTE Cut off any extra chains that don't have a ssc seed tied to them to find n_chains
-    n_chains = len(ssc_rng_seeds) 
+    for lsc_idx in lsc_indices:
+        lsc_seed = rng_seeds[lsc_idx]
+        lsc_path = output_path / 'LargeScaleChain' / str(lsc_seed)[:6]
 
-    lsc_path = output_path / 'LargeScaleChain' / str(lsc_rng_seed)[:6]
+        bed_files = sorted(
+            lsc_path.glob('bed_*.npy'),
+            key=lambda f: int(f.stem.split('_')[1].replace('k', ''))
+        )
+
+        ssc_seeds_for_lsc = rng_seeds[
+            10 + lsc_idx * 10 :
+            10 + lsc_idx * 10 + 10
+        ]
+
+        for i, bed_file in enumerate(bed_files):
+            lsc_iter = int(bed_file.stem.split('_')[1].replace('k', '')) * 1000
+            
+            one_initial_bed = np.load(bed_file) 
+            thickness = bedmap_surf - one_initial_bed
+            one_initial_bed = np.where((thickness <= 0) & (bedmap_mask == 1), bedmap_surf - 1, one_initial_bed)
+            initial_beds.append(one_initial_bed)
+            
+            ssc_seeds.append(ssc_seeds_for_lsc[i])
+            lsc_seed_map.append(lsc_seed)
+            lsc_iter_map.append(lsc_iter)
+
+            ssc_folder = lsc_path / 'SmallScaleChain' / str(ssc_seeds_for_lsc[i])[:6]
+            ssc_folder.mkdir(parents=True, exist_ok=True)
+            np.savetxt(ssc_folder / 'init_iter.txt', [lsc_iter], fmt='%d')
 
     # TODO: This needs to be different
-    initial_bed = np.loadtxt(list(lsc_path.glob('bed_*.txt'))[0])
+    initial_bed = initial_beds[0]
     thickness = bedmap_surf - initial_bed
     # make sure every topography in the grounded ice region is below ice surface
     initial_bed = np.where((thickness <= 0) & (
@@ -559,28 +624,7 @@ if __name__ == '__main__':
     # in multiprocessing, the random generator in here will be replaced by rng_seeds later
     smallScaleChain.set_random_generator(rng_seed=rng_seed)
     
-    
-    # Create output for the small scale chain
-    ss_chain_folder = lsc_path / 'SmallScaleChain'
-    ss_chain_folder.mkdir(parents=True, exist_ok=True)
-
-    # Create small scale chain folders specific for the current index
-    for j in range(n_chains):
-        ss_seed = ssc_rng_seeds[j]
-        ss_seed_folder = ss_chain_folder / f'{str(ss_seed)[:6]}'
-        ss_seed_folder.mkdir(parents=True, exist_ok=True)
-
-    # fill in a list of initial_beds to be used for each chain
-    # the list length should be equal to number of chains
-    initial_beds = []
-    bed_iter_toload = ['5k', '10k', '20k', '30k', '40k']
-    for i in range(n_chains):
-        iter_load = bed_iter_toload[i]
-        lsc_bed = np.loadtxt(lsc_path / f'bed_{iter_load}.txt')
-        initial_beds.append(lsc_bed)
-    #initial_beds = np.array([initial_bed] * n_chains) # np.repeart(initial_bed, n_chains)
-
     # number of iterations used to run each chain
-    n_iters = [n_iter]*n_chains
+    n_iters = [n_iter]*n_ssc_total
 
-    result = smallScaleChain_mp(n_chains, n_workers, smallScaleChain, initial_beds, ssc_rng_seeds, lsc_rng_seed, n_iters, output_path = output_path)
+    result = smallScaleChain_mp(n_ssc_total, n_workers, smallScaleChain, initial_beds, ssc_seeds, lsc_seed_map, n_iters, output_path = output_path)

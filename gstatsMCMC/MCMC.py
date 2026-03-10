@@ -1787,13 +1787,15 @@ class chain_sgs(chain):
             loss_next, loss_next_mc, loss_next_data = self.loss(mc_res,data_diff)
             
             if self.detrend_map == True:
-                thickness = self.surf - (bed_next + self.trend)
+                block_thickness = self.surf[bxmin:bxmax,bymin:bymax] - (bed_next[bxmin:bxmax,bymin:bymax] + self.trend[bxmin:bxmax,bymin:bymax])
             else:
-                thickness = self.surf - bed_next
-            
-            if np.sum((thickness<=0)[self.grounded_ice_mask==1]) > 0:
+                block_thickness = self.surf[bxmin:bxmax,bymin:bymax] - bed_next[bxmin:bxmax,bymin:bymax]
+                
+            block_region_mask = self.grounded_ice_mask[bxmin:bxmax,bymin:bymax]
+                
+            if np.sum((block_thickness<=0)&(block_region_mask==1)) > 0:
                 loss_next = np.inf
-            
+
             if loss_prev > loss_next:
                 acceptance_rate = 1
                 
